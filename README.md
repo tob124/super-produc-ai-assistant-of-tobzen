@@ -16,7 +16,7 @@ An OpenAI-powered AI assistant plugin that lets you manage tasks, projects, and 
 
 ## Installation
 
-1. Download the latest `ai-assistant-plugin.zip` from Releases
+1. Download [ai-assistant-plugin.zip from the latest release](https://github.com/tob124/super-produc-ai-assistant-of-tobzen/releases/latest/download/ai-assistant-plugin.zip)
 2. Open Super Productivity → Settings → Plugins → Load unpacked
 3. Select the zip file
 4. Click the ⚙️ button in the plugin panel to configure your API key
@@ -79,6 +79,8 @@ Timer controls appear on hosts exposing `startTracking` and `stopTracking`. The 
 ```
 
 Run the regression tests with `node --test tests/*.test.cjs`.
+
+GitHub Actions runs the tests on pull requests and pushes to `master`. To publish a new version, bump `version` in `manifest.json` and push to `master`. After tests pass, the workflow creates a versioned GitHub Release with the installable ZIP. You can also run **Test and release plugin** manually from the Actions tab on `master`.
 
 ### Build / Package
 

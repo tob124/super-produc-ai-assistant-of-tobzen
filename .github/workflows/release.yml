@@ -1,64 +1,64 @@
-name: Release Plugin
+name: Test and release plugin
 
 on:
+  pull_request:
+    branches: [master]
   push:
-    branches:
-      - master
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  release:
+  test:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --test tests/*.test.cjs
+
+  release:
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: plugin-release
+      cancel-in-progress: false
     permissions:
       contents: write
-    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Extract version from manifest.json
-        id: version
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Package and publish the manifest version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(jq -r '.version' manifest.json)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Extracted version: $VERSION"
-
-      - name: Check if tag exists
-        id: check_tag
-        run: |
-          if git rev-parse "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
-          else
-            echo "exists=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          version=$(jq -er '.version | select(test("^[0-9]+[.][0-9]+[.][0-9]+$"))' manifest.json)
+          tag="v$version"
+          source=$GITHUB_SHA
+          if git show-ref --tags --verify --quiet "refs/tags/$tag"; then
+            source="refs/tags/$tag"
           fi
 
-      - name: Create plugin package
-        if: steps.check_tag.outputs.exists == 'false'
-        run: |
-          zip -r ai-assistant-plugin.zip \
-            manifest.json \
-            index.html \
-            plugin.js \
-            icon.svg \
-            README.md
+          asset=ai-assistant-plugin.zip
+          git archive --format=zip --output="$asset" "$source" -- manifest.json index.html plugin.js icon.svg README.md
+          unzip -t "$asset"
+          test "$(unzip -p "$asset" manifest.json | jq -r .version)" = "$version"
 
-      - name: Create GitHub Release
-        if: steps.check_tag.outputs.exists == 'false'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Release v${{ steps.version.outputs.version }}
-          body: |
-            ## AI Assistant Plugin v${{ steps.version.outputs.version }}
-            
-            ### Installation
-            1. Download `ai-assistant-plugin.zip`
-            2. In Super Productivity, go to Settings → Plugins
-            3. Click "Install from file" and select the downloaded zip
-            
-            ### Changes
-            See [commit history](https://github.com/${{ github.repository }}/commits/master) for details.
-          files: ai-assistant-plugin.zip
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if gh release view "$tag" --json assets,isDraft > "$RUNNER_TEMP/release.json"; then
+            if ! jq -e --arg asset "$asset" 'any(.assets[]; .name == $asset and .state == "uploaded" and .size > 0)' "$RUNNER_TEMP/release.json" >/dev/null; then
+              gh release upload "$tag" "$asset" --clobber
+            fi
+            if jq -e '.isDraft' "$RUNNER_TEMP/release.json" >/dev/null; then
+              gh release edit "$tag" --draft=false
+            fi
+          else
+            gh release create "$tag" "$asset" --target "$GITHUB_SHA" \
+              --title "AI Assistant Plugin $tag" \
+              --notes "Download ai-assistant-plugin.zip below and install it from Settings → Plugins in Super Productivity."
+          fi
