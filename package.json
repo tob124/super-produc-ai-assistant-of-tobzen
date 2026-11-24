@@ -1,0 +1,12 @@
+{
+  "name": "super-productivity-ai-assistant",
+  "private": true,
+  "scripts": {
+    "bundle:runner": "node scripts/bundle-runner.mjs",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "openai": "7.63.0"
+  }
+}

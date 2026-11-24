@@ -10,7 +10,7 @@ An OpenAI-powered AI assistant plugin that lets you manage tasks, projects, and 
 - ⏱️ Start/stop timers, set current task, plan for today
 - 🏷️ Add/remove individual tags without replacing others
 - 📊 Worklog reports: time per day/project/tag, estimate accuracy
-- 🔄 Agentic tool calling — AI auto-executes operations (up to 5 tool rounds followed by a final summary)
+- 🔄 Agentic tool calling — AI auto-executes operations using the OpenAI SDK tool runner, with progress-based stopping and a shared output budget
 - 📝 Markdown rendering for AI responses (headers, tables, code blocks, lists)
 - ⚙️ Configurable: API key, base URL, model, temperature
 
@@ -52,7 +52,7 @@ Supports any OpenAI-compatible API (DeepSeek, Claude via proxy, local models, et
 | **Context** | `set_active_work_context` | Switch active project/tag view |
 | **UI** | `show_notification` | Show snackbar notifications |
 
-Task, project and tag lists return a page with `total` and `next_offset`. Task notes are available on demand with `get_task`. Recent chat text is reused across turns. Tool transcripts and reasoning are sent only during the active turn. Stop cancels the pending model request and prevents further tool calls. Host operations already underway can still finish.
+Task, project and tag lists return a page with `total` and `next_offset`. Use `get_task` for exact note excerpts. For detailed analysis, `read_task_contents` reads a task by ID (or the selected task on supported hosts), optionally with descendants. Short reads return source text. For longer reads, the configured model extracts findings in read-only passes against the same token budget. Progress cards show coverage; ask to continue in the same chat if a checkpoint remains. Edits to the source invalidate the checkpoint. Recent chat text is reused across turns. Tool transcripts and reasoning are sent only during the active turn. Stop cancels the pending model request and prevents further tool calls. Host operations already underway can still finish.
 
 Timer controls appear on hosts exposing `startTracking` and `stopTracking`. The timer status reader uses the host’s `currentTaskChange` event and reports when it has not yet observed a change.
 
@@ -77,6 +77,8 @@ Timer controls appear on hosts exposing `startTracking` and `stopTracking`. The 
 ├── index.html           # Chat UI + OpenAI integration (all inline)
 └── icon.svg             # Plugin icon
 ```
+
+The OpenAI SDK runner is bundled into `index.html` for offline plugin loading. To refresh it, run `npm ci` and `npm run bundle:runner`; installing the ZIP needs no npm packages.
 
 Run the regression tests with `node --test tests/*.test.cjs`.
 

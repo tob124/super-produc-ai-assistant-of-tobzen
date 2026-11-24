@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Super Productivity plugin (manifest v1) that provides an AI chat panel for task management via OpenAI-compatible APIs. Single-file architecture — all CSS, HTML, and JS live inline in `index.html`. No build system or runtime dependencies. Run regression tests with `node --test tests/*.test.cjs`.
+Super Productivity plugin (manifest v1) that provides an AI chat panel for task management via OpenAI-compatible APIs. Single-file architecture — all CSS, HTML, and JS live inline in `index.html`. The OpenAI SDK runner is embedded in the HTML. Refresh it with `npm ci && npm run bundle:runner`. Run regression tests with `node --test tests/*.test.cjs`.
 
 ## File map
 
@@ -22,7 +22,7 @@ Super Productivity plugin (manifest v1) that provides an AI chat panel for task 
 **Data flow:**
 1. `sendMessage()` constructs a bounded history of chat text and requests host data through tools on demand
 2. `callOpenAI()` sends the active exchange and available tool definitions to the model
-3. If the model returns `tool_calls`, `executeTool()` dispatches to matching `PluginAPI` calls, results appended as tool messages, loop continues (max 5 rounds)
+3. If the model returns `tool_calls`, `executeTool()` dispatches to matching `PluginAPI` calls, the bundled SDK pairs results and continues while there is progress and budget (up to 14 tool rounds)
 4. Final text response rendered via custom `renderMarkdown()` and displayed
 
 **Persistence:** Config and conversation (last 50 messages) are stored via `PluginAPI.loadSyncedData()` / `PluginAPI.persistDataSynced()` under keys `ai-assistant-config` and `ai-assistant-conversation`.

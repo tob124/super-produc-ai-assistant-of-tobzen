@@ -18,6 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
+      - name: Verify bundled SDK matches the lockfile
+        run: npm run bundle:runner && git diff --exit-code -- index.html
       - run: node --test tests/*.test.cjs
 
   release:
