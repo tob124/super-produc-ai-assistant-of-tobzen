@@ -16,7 +16,7 @@
       --chat-accent: var(--c-accent, #81c784);
       --chat-warn: var(--c-warn, #ffb74d);
       --chat-user-bg: var(--c-primary, #4fc3f7);
-      --chat-user-text: #fff;
+      --chat-user-text: var(--button-primary-label, #102635);
       --chat-bot-bg: var(--card-bg, #1e2a4a);
     }
     body {
@@ -240,6 +240,18 @@
     .conv-dropdown-empty {
       padding: 16px; text-align: center; color: var(--chat-text-muted); font-size: 13px;
     }
+    .run-status { font-size: 12px; color: var(--chat-text-muted); }
+    .action-card { overflow-wrap: anywhere; margin-bottom: 4px; }
+    .action-card.error { color: var(--color-danger, var(--chat-warn)); }
+    .header-title, .conv-selector { min-width: 0; }
+    #conv-selector-title, #model-badge { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .header-actions { flex-shrink: 0; }
+    button:focus-visible { outline: 2px solid var(--chat-primary); outline-offset: 2px; }
+    #stop-btn { color: var(--chat-text); background: var(--chat-surface); border: 1px solid var(--chat-border); padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+    #send-btn[hidden] { display: none; }
+    .action-card { border-left: 2px solid var(--color-success, var(--chat-accent)); }
+    .action-card.error { border-left-color: var(--color-danger, var(--chat-warn)); }
+    button:disabled { opacity: .55; }
   </style>
 </head>
 <body>
@@ -268,7 +280,8 @@
   <div id="chat-container" class="chat-container"></div>
 
   <div class="input-area">
-    <textarea id="input" placeholder="Ask me anything about your tasks..." rows="1"></textarea>
+    <textarea id="input" aria-label="Message" placeholder="Ask me anything about your tasks..." rows="1"></textarea>
+    <button id="stop-btn" hidden type="button">Stop</button>
     <button id="send-btn" class="send-btn" title="Send">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
     </button>
@@ -276,27 +289,27 @@
 
   <!-- Settings Modal -->
   <div id="settings-overlay" class="settings-overlay hidden">
-    <div class="settings-panel">
+    <div class="settings-panel" role="dialog" aria-modal="true" aria-label="Assistant settings">
       <h3>⚙️ AI Assistant Settings</h3>
       <div class="settings-field">
-        <label>API Key *</label>
+        <label for="cfg-apiKey">API Key *</label>
         <input type="password" id="cfg-apiKey" placeholder="sk-..." />
       </div>
       <div class="settings-field">
-        <label>Base URL</label>
+        <label for="cfg-baseUrl">Base URL</label>
         <input type="text" id="cfg-baseUrl" placeholder="https://api.openai.com/v1" />
         <div class="model-info">OpenAI-compatible endpoint (include /v1 if needed)</div>
       </div>
       <div class="settings-field">
-        <label>Model</label>
+        <label for="cfg-model">Model</label>
         <input type="text" id="cfg-model" placeholder="gpt-4o" />
       </div>
       <div class="settings-field">
-        <label>Max Tokens</label>
-        <input type="number" id="cfg-maxTokens" placeholder="4096" min="256" max="16384" />
+        <label for="cfg-maxTokens">Output tokens per model response</label>
+        <input type="number" id="cfg-maxTokens" placeholder="2048" min="256" max="4096" />
       </div>
       <div class="settings-field">
-        <label>Temperature</label>
+        <label for="cfg-temperature">Temperature</label>
         <input type="number" id="cfg-temperature" placeholder="0.7" min="0" max="2" step="0.1" />
       </div>
       <div class="settings-actions">
@@ -317,7 +330,8 @@
     var conversations = null;  // { activeId, list: [{id,title,createdAt,updatedAt,messages}] }
     var messages = [];          // live reference to active conversation's messages
     var isProcessing = false;
-    var currentTaskId = null;
+    let activeRequest;
+    var trackedTask; // Unknown until the host emits currentTaskChange.
 
     // ==================== CONFIG PERSISTENCE ====================
     async function loadConfig() {
@@ -518,6 +532,7 @@
           var text = m.content.split('\n\n---\n[App Context]')[0];
           displayMessage('user', text);
         } else if (m.role === 'assistant' && m.content) {
+          if (m.actions) displayActions(m.actions);
           displayMessage('assistant', m.content);
         }
       }
@@ -528,7 +543,7 @@
       document.getElementById('cfg-apiKey').value = (config && config.apiKey) || '';
       document.getElementById('cfg-baseUrl').value = (config && config.baseUrl) || 'https://api.openai.com/v1';
       document.getElementById('cfg-model').value = (config && config.model) || 'gpt-4o';
-      document.getElementById('cfg-maxTokens').value = (config && config.maxTokens) || 4096;
+      document.getElementById('cfg-maxTokens').value = responseLimit(config && config.maxTokens);
       document.getElementById('cfg-temperature').value = (config && config.temperature !== undefined) ? config.temperature : 0.7;
       document.getElementById('settings-overlay').classList.remove('hidden');
     }
@@ -537,12 +552,12 @@
       document.getElementById('settings-overlay').classList.add('hidden');
     }
 
-    function doSaveSettings() {
+    async function doSaveSettings() {
       var cfg = {
         apiKey: document.getElementById('cfg-apiKey').value.trim(),
         baseUrl: document.getElementById('cfg-baseUrl').value.trim() || 'https://api.openai.com/v1',
         model: document.getElementById('cfg-model').value.trim() || 'gpt-4o',
-        maxTokens: parseInt(document.getElementById('cfg-maxTokens').value) || 4096,
+        maxTokens: responseLimit(document.getElementById('cfg-maxTokens').value),
         temperature: parseFloat(document.getElementById('cfg-temperature').value),
       };
       if (isNaN(cfg.temperature)) cfg.temperature = 0.7;
@@ -552,11 +567,11 @@
         return;
       }
 
-      saveConfig(cfg);
+      await saveConfig(cfg);
       closeSettings();
 
       // Refresh the view
-      var container = document.getElementById('chat-container');
+      if (!getActiveConv()) createConversation('New Chat');
       if (messages.length > 0) {
         // Already have conversation
       } else {
@@ -592,6 +607,7 @@
         include_done:{type:'boolean',description:'Include completed tasks (default false)'},
         include_archived:{type:'boolean',description:'Include archived tasks (default false)'},
         search_query:{type:'string',description:'Case-insensitive title/notes search'},
+        current_view:{type:'boolean',description:'Limit to the active Super Productivity view'},
         parents_only:{type:'boolean',description:'Exclude subtasks, return only top-level tasks'},
         overdue:{type:'boolean',description:'Return only tasks with due date before today'},
         unscheduled:{type:'boolean',description:'Return only tasks with no due date'},
@@ -604,7 +620,6 @@
         notes:{type:'string',description:'New notes'},
         is_done:{type:'boolean',description:'Mark as done/undone'},
         due_day:{type:'string',description:'Due date YYYY-MM-DD, or empty string to clear'},
-        planned_at:{type:'number',description:'Unix ms timestamp to plan task (e.g. start of today). Null to unplan.'},
         time_estimate:{type:'number',description:'Time estimate in ms'},
         time_spent:{type:'number',description:'Time spent in ms'},
         tag_ids:{type:'array',items:{type:'string'},description:'Bulk-replace all tags with this list'},
@@ -633,7 +648,7 @@
         task_ids:{type:'array',items:{type:'string'},description:'Array of task IDs to complete'}
       }, required:['task_ids'] }}},
       { type:'function', function:{ name:'bulk_update_tasks', description:'Update multiple tasks with different updates in one operation. Max 100.', parameters:{ type:'object', properties:{
-        updates:{type:'array',items:{type:'object',properties:{
+        updates:{type:'array',items:{type:'object',required:['task_id'],properties:{
           task_id:{type:'string',description:'Task ID to update'},
           title:{type:'string',description:'New title'},
           notes:{type:'string',description:'New notes'},
@@ -657,7 +672,7 @@
         notes:{type:'string',description:'Parent task notes'},
         project_id:{type:'string',description:'Project ID for the parent task'},
         tag_ids:{type:'array',items:{type:'string'},description:'Tag IDs for the parent task'},
-        subtasks:{type:'array',items:{type:'object',properties:{title:{type:'string'},notes:{type:'string'}}},description:'Subtask definitions [{title,notes}]'}
+        subtasks:{type:'array',items:{type:'object',required:['title'],properties:{title:{type:'string'},notes:{type:'string'}}},description:'Subtask definitions [{title,notes}]'}
       }, required:['title','subtasks'] }}},
       { type:'function', function:{ name:'plan_tasks_for_today', description:'Plan tasks for today (adds to Today view) or unplan them. Max 100.', parameters:{ type:'object', properties:{
         task_ids:{type:'array',items:{type:'string'},description:'Task IDs to plan/unplan'},
@@ -705,7 +720,7 @@
     ];
 
     // ==================== SYSTEM PROMPT ====================
-    var BASE_SYSTEM_PROMPT = 'You are an AI assistant integrated into Super Productivity, a task management app.\nYou can help users manage their tasks, projects, tags, and app state using the provided tools.\n\nRules:\n- Use tools to execute actions. Always confirm what you did.\n- Be concise. Match the user\'s language.\n- Prefer fetching tasks first to get IDs, then operate.\n- Summarize tool results human-friendly, don\'t dump raw JSON.\n- Time: 30min=1800000ms, 1h=3600000ms.\n- Current date: ' + new Date().toISOString().slice(0, 10);
+    var BASE_SYSTEM_PROMPT = 'You are an AI assistant integrated into Super Productivity, a task management app.\nYou can help users manage their tasks, projects, tags, and app state using the provided tools.\n\nRules:\n- Use tools to execute actions. Always confirm what you did.\n- Be concise. Match the user\'s language.\n- Prefer fetching tasks first to get IDs, then operate.\n- Summarize tool results human-friendly, don\'t dump raw JSON.\n- Time: 30min=1800000ms, 1h=3600000ms.\n- Request only needed pages. Report failures and partial results accurately. Never repeat a completed mutation.';
 
     // ==================== TOOL EXECUTION ====================
     async function executeTool(name, args) {
@@ -713,7 +728,7 @@
         switch (name) {
           // ---- TASKS ----
           case 'create_task': {
-            var d = {title:args.title, notes:args.notes||'', tagIds:args.tag_ids||[]};
+            var d = {isIgnoreShortSyntax:true,title:args.title, notes:args.notes||'', tagIds:args.tag_ids||[]};
             if(args.project_id) d.projectId = args.project_id;
             if(args.parent_id) d.parentId = args.parent_id;
             if(args.due_day) d.dueDay = args.due_day;
@@ -721,18 +736,38 @@
             var id = await PluginAPI.addTask(d);
             return {success:true, task_id:id};
           }
+          case 'get_task': {
+            let task = (await PluginAPI.getTasks()).find(t => t.id === args.task_id);
+            if (!task && args.include_archived) task = (await PluginAPI.getArchivedTasks()).find(t => t.id === args.task_id);
+            if (!task) return {error:'Task not found'};
+            const notes = task.notes || '', offset = args.notes_offset || 0;
+            return {id:task.id,title:task.title,notes:notes.slice(offset,offset+1200),
+              next_notes_offset:notes.length > offset+1200 ? offset+1200 : null,
+              isDone:task.isDone,projectId:task.projectId,parentId:task.parentId,tagIds:task.tagIds,
+              dueDay:task.dueDay,dueWithTime:task.dueWithTime,subTaskIds:task.subTaskIds,timeEstimate:task.timeEstimate,timeSpent:task.timeSpent};
+          }
           case 'get_tasks': {
-            var tasks = await PluginAPI.getTasks();
+            if (args.current_view && args.include_archived) return {error:'Archived tasks cannot be queried within the current view.'};
+            var tasks = args.current_view ? await PluginAPI.getCurrentContextTasks() : await PluginAPI.getTasks();
+            if (args.include_archived) tasks = tasks.concat(await PluginAPI.getArchivedTasks());
             if(!args.include_done) tasks = tasks.filter(function(t){return !t.isDone;});
             if(args.project_id) tasks = tasks.filter(function(t){return t.projectId===args.project_id;});
             if(args.tag_id) tasks = tasks.filter(function(t){return t.tagIds&&t.tagIds.indexOf(args.tag_id)!==-1;});
             if(args.search_query){var q=args.search_query.toLowerCase();tasks=tasks.filter(function(t){return(t.title&&t.title.toLowerCase().indexOf(q)!==-1)||(t.notes&&t.notes.toLowerCase().indexOf(q)!==-1);});}
             if(args.parents_only) tasks = tasks.filter(function(t){return !t.parentId;});
-            if(args.overdue){var today=new Date().toISOString().slice(0,10);tasks=tasks.filter(function(t){return t.dueDay&&t.dueDay<today;});}
-            if(args.unscheduled) tasks = tasks.filter(function(t){return !t.dueDay&&!t.dueWithTime;});
-            if(args.planned_for_today){var now=new Date(),sod=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime(),eot=sod+86400000;tasks=tasks.filter(function(t){return t.plannedAt&&t.plannedAt>=sod&&t.plannedAt<eot;});}
+            if (args.overdue || args.planned_for_today) {
+              const day = await dayContext();
+              tasks = tasks.filter(task => {
+                const date = task.dueWithTime ? localDay(task.dueWithTime - day.startOfNextDayDiffMs) : task.dueDay;
+                return date && (!args.overdue || date < day.todayStr) && (!args.planned_for_today || date === day.todayStr);
+              });
+            }
+            if (args.unscheduled) tasks = tasks.filter(task => !task.dueDay && !task.dueWithTime);
             if(args.recurring_only) tasks = tasks.filter(function(t){return t.repeatCfgId!=null;});
-            return tasks.map(function(t){return{id:t.id,title:t.title,isDone:t.isDone,projectId:t.projectId,parentId:t.parentId,tagIds:t.tagIds,dueDay:t.dueDay,plannedAt:t.plannedAt,timeEstimate:t.timeEstimate,timeSpent:t.timeSpent,notes:t.notes?String(t.notes).slice(0,300):null,subTaskIds:t.subTaskIds,doneOn:t.doneOn};});
+            return pageOf(tasks, args, task => ({
+              id:task.id, title:task.title.slice(0,160), projectId:task.projectId,
+              isDone:task.isDone, dueDay:task.dueDay, dueWithTime:task.dueWithTime
+            }));
           }
           case 'update_task': {
             var u={};
@@ -740,7 +775,7 @@
             if(args.notes!==undefined) u.notes=args.notes;
             if(args.is_done!==undefined){u.isDone=args.is_done;u.doneOn=args.is_done?Date.now():null;}
             if(args.due_day!==undefined) u.dueDay=args.due_day||null;
-            if(args.planned_at!==undefined) u.plannedAt=args.planned_at;
+
             if(args.time_estimate!==undefined) u.timeEstimate=args.time_estimate;
             if(args.time_spent!==undefined) u.timeSpent=args.time_spent;
             if(args.tag_ids!==undefined) u.tagIds=args.tag_ids;
@@ -779,20 +814,15 @@
             return {success:true};
           }
           case 'get_current_task': {
-            var all = await PluginAPI.getTasks();
-            var cur = all.find(function(t){return t.isDone===false && t.id===currentTaskId;});
-            return cur?{id:cur.id,title:cur.title,isDone:cur.isDone,projectId:cur.projectId,tagIds:cur.tagIds,timeEstimate:cur.timeEstimate}:null;
+            if (trackedTask === undefined) return {error:'Tracking state has not been reported by the host yet.'};
+            return trackedTask ? {id:trackedTask.id, title:trackedTask.title} : null;
           }
-          case 'start_task': {
-            PluginAPI.dispatchAction({type:'[Task] SetCurrentTask',payload:{task:{id:args.task_id}}});
-            PluginAPI.dispatchAction({type:'[Task] ToggleStart'});
-            currentTaskId = args.task_id;
+          case 'start_task':
+            await PluginAPI.startTracking(args.task_id);
             return {success:true};
-          }
-          case 'stop_task': {
-            PluginAPI.dispatchAction({type:'[Task] ToggleStart'});
+          case 'stop_task':
+            await PluginAPI.stopTracking();
             return {success:true};
-          }
           case 'bulk_complete_tasks': {
             var results = [];
             for(var bi=0;bi<args.task_ids.length;bi++){
@@ -820,33 +850,43 @@
             await PluginAPI.updateTask(args.task_id, {projectId:args.project_id});
             return {success:true};
           case 'reorder_tasks':
-            for(var ri2=0;ri2<args.task_ids.length;ri2++){
-              try{await PluginAPI.updateTask(args.task_ids[ri2],{_order:ri2});}catch(e){}
-            }
+            await PluginAPI.reorderTasks(args.task_ids, args.context_id, args.context_type === 'parent' ? 'task' : 'project');
             return {success:true};
           case 'create_task_with_subtasks': {
-            var parentId = await PluginAPI.addTask({title:args.title,notes:args.notes||'',projectId:args.project_id||null,tagIds:args.tag_ids||[]});
+            var parentId = await PluginAPI.addTask({isIgnoreShortSyntax:true,title:args.title,notes:args.notes||'',projectId:args.project_id||null,tagIds:args.tag_ids||[]});
             var subIds = [];
-            for(var si=0;si<(args.subtasks||[]).length;si++){
-              var st=args.subtasks[si];
-              var sid=await PluginAPI.addTask({title:st.title,notes:st.notes||'',parentId:parentId,projectId:args.project_id||null,tagIds:[]});
-              subIds.push(sid);
+            try {
+              for (const st of args.subtasks) {
+                subIds.push(await PluginAPI.addTask({isIgnoreShortSyntax:true,title:st.title,notes:st.notes||'',parentId,projectId:args.project_id||null,tagIds:[]}));
+              }
+            } catch (error) {
+              return {parent_id:parentId, subtask_ids:subIds, error:'Parent created; '+subIds.length+' subtasks created. '+error.message};
             }
             return {parent_id:parentId, subtask_ids:subIds};
           }
           case 'plan_tasks_for_today': {
-            var pnow=new Date(),pstart=new Date(pnow.getFullYear(),pnow.getMonth(),pnow.getDate()).getTime();
-            var pval=args.unplan?null:pstart;
-            var presults=[];
-            for(var pi=0;pi<args.task_ids.length;pi++){
-              try{await PluginAPI.updateTask(args.task_ids[pi],{plannedAt:pval});presults.push({task_id:args.task_ids[pi],success:true});}
-              catch(e){presults.push({task_id:args.task_ids[pi],success:false,error:e.message});}
+            var pval=args.unplan ? null : (await dayContext()).todayStr;
+            const tasksById = new Map((await PluginAPI.getTasks()).map(task => [task.id,task]));
+            const results = [];
+            const today = args.unplan ? (await dayContext()).todayStr : pval;
+            for (const id of args.task_ids) {
+              try {
+                const task = tasksById.get(id);
+                if (!task) throw Error('Task not found');
+                if (task.dueWithTime) throw Error('This task has a scheduled time. Adjust it in Super Productivity.');
+                if ((!args.unplan || task.dueDay === today) && task.dueDay !== pval) {
+                  await PluginAPI.updateTask(id,{dueDay:pval});
+                }
+                results.push({task_id:id,success:true});
+              } catch (error) {
+                results.push({task_id:id,success:false,error:error.message});
+              }
             }
-            return {results:presults};
+            return {results};
           }
           case 'get_worklog': {
             var wtasks = await PluginAPI.getTasks();
-            var wdone = await PluginAPI.getArchivedTasks ? await PluginAPI.getArchivedTasks() : [];
+            var wdone = PluginAPI.getArchivedTasks ? await PluginAPI.getArchivedTasks() : [];
             var wall = wtasks.concat(wdone);
             var daily={},byProject={},byTag={},completed=0,totalEst=0,totalAct=0;
             for(var wi=0;wi<wall.length;wi++){
@@ -859,7 +899,7 @@
 
           // ---- PROJECTS ----
           case 'get_projects':
-            return (await PluginAPI.getAllProjects()).map(function(p){return{id:p.id,title:p.title,taskCount:p.taskIds?p.taskIds.length:0};});
+            return pageOf(await PluginAPI.getAllProjects(), args, p => ({id:p.id,title:p.title.slice(0,160)}));
           case 'create_project': {
             var pdata={title:args.title};
             if(args.description) pdata.description=args.description;
@@ -876,7 +916,7 @@
 
           // ---- TAGS ----
           case 'get_tags':
-            return (await PluginAPI.getAllTags()).map(function(t){return{id:t.id,title:t.title,color:t.color,icon:t.icon};});
+            return pageOf(await PluginAPI.getAllTags(), args, t => ({id:t.id,title:t.title.slice(0,160)}));
           case 'create_tag': {
             var td2={title:args.title};
             if(args.color) td2.color=args.color;
@@ -893,10 +933,15 @@
 
           // ---- APP STATE ----
           case 'set_active_work_context':
-            PluginAPI.dispatchAction({type:'[WorkContext] SetActiveWorkContext',activeId:args.context_id});
+            var projects = await PluginAPI.getAllProjects();
+            var isProject = projects.some(project => project.id === args.context_id);
+            if (!isProject && !(await PluginAPI.getAllTags()).some(tag => tag.id === args.context_id)) {
+              return {error:'Unknown project or tag ID'};
+            }
+            await PluginAPI.dispatchAction({type:'[WorkContext] Set Active Work Context', activeId:args.context_id, activeType:isProject ? 'PROJECT' : 'TAG'});
             return {success:true};
           case 'show_notification':
-            PluginAPI.dispatchAction({type:'[Snack] Show',message:args.message||'',data:{type:args.type||'INFO'}});
+            await PluginAPI.showSnack({msg:args.message, type:args.type || 'INFO'});
             return {success:true};
 
           default: return {error:'Unknown tool: '+name};
@@ -905,88 +950,190 @@
     }
 
     // ==================== CONTEXT ====================
-    async function buildContext() {
-      try {
-        var tasks = await PluginAPI.getCurrentContextTasks();
-        var projects = await PluginAPI.getAllProjects();
-        var tags = await PluginAPI.getAllTags();
-        var active = tasks.filter(function(t){return !t.isDone;}).slice(0,30);
-        var cur = currentTaskId ? tasks.find(function(t){return t.id===currentTaskId;}) : null;
-        return JSON.stringify({
-          currentDate:new Date().toISOString().slice(0,10), currentTime:new Date().toLocaleTimeString(),
-          currentTask:cur?{id:cur.id,title:cur.title}:null,
-          stats:{total:tasks.length,active:active.length},
-          activeTasks:active.map(function(t){return{id:t.id,title:t.title,dueDay:t.dueDay,timeEstimate:t.timeEstimate};}),
-          projects:projects.map(function(p){return{id:p.id,title:p.title,taskCount:p.taskIds?p.taskIds.length:0};}),
-          tags:tags.map(function(t){return{id:t.id,title:t.title};}),
+    function localDay(timestamp) {
+      const date = new Date(timestamp);
+      return [date.getFullYear(), String(date.getMonth()+1).padStart(2,'0'), String(date.getDate()).padStart(2,'0')].join('-');
+    }
+
+    async function dayContext() {
+      return typeof PluginAPI.getDayContext === 'function' ? await PluginAPI.getDayContext()
+        : {todayStr:localDay(Date.now()), startOfNextDayDiffMs:0};
+    }
+
+    for (const tool of tools) {
+      if (['get_tasks', 'get_projects', 'get_tags'].includes(tool.function.name)) {
+        Object.assign(tool.function.parameters.properties, {
+          offset:{type:'integer', minimum:0}, limit:{type:'integer', minimum:1, maximum:15}
         });
-      } catch(e) { return '{"error":"'+e.message+'"}'; }
+      }
     }
 
-    // ==================== OPENAI API ====================
-    async function callOpenAI(msgs) {
-      var baseUrl = (config.baseUrl||'https://api.openai.com/v1').replace(/\/+$/,'');
-      var sys = BASE_SYSTEM_PROMPT;
-      var full = [{role:'system',content:sys}].concat(msgs);
-      var resp = await fetch(baseUrl+'/chat/completions',{
-        method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+config.apiKey},
-        body:JSON.stringify({model:config.model||'gpt-4o',messages:full,tools:tools,tool_choice:'auto',max_tokens:config.maxTokens||4096,temperature:config.temperature!==undefined?config.temperature:0.7})
+    tools.push({type:'function', function:{name:'get_task', description:'Read one task by ID, including notes and relationships.', parameters:{
+      type:'object', properties:{task_id:{type:'string'},include_archived:{type:'boolean'},notes_offset:{type:'integer',minimum:0}}, required:['task_id']
+    }}});
+
+    function pageOf(items, args, project) {
+      const start = args.offset || 0;
+      const rows = items.slice(start, start + (args.limit || 10)).map(project);
+      const end = start + rows.length;
+      return {items:rows, total:items.length, next_offset:end < items.length ? end : null};
+    }
+
+    const TURN_TOKENS = 8192;
+    const MAX_ROUNDS = 5;
+    function responseLimit(value) {
+      return Math.min(4096, Math.max(256, Math.floor(Number(value)) || 2048));
+    }
+
+    function recentHistory() {
+      const result = [];
+      let size = 0;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (!['assistant','user'].includes(m.role) || !m.content || m.tool_calls) continue;
+        const visible = m.content.split('\n\n---\n[App Context]')[0].slice(0,1500);
+        const refs = (m.actions || []).filter(a => a.ref).slice(-5).map(a => a.name+' '+a.ref);
+        const content = refs.length ? visible+'\nTool results: '+refs.join(', ') : visible;
+        size += content.length;
+        if (size > 5000) break;
+        result.unshift({role:m.role, content});
+      }
+      return result;
+    }
+
+    function availableTools() {
+      const optional = {start_task:'startTracking', stop_task:'stopTracking', reorder_tasks:'reorderTasks',
+        show_notification:'showSnack', get_current_task:'registerHook'};
+      return tools.filter(({function:fn}) => !optional[fn.name] || typeof PluginAPI[optional[fn.name]] === 'function');
+    }
+
+    async function callOpenAI(dialog, offered, limit) {
+      const body = {model:config.model || 'gpt-4o', messages:dialog};
+      if (/^(o[1-9]|gpt-5)/i.test(body.model)) body.max_completion_tokens = limit;
+      else Object.assign(body, {max_tokens:limit, temperature:config.temperature ?? 0.7});
+      if (offered.length) Object.assign(body, {tools:offered, tool_choice:'auto'});
+      // Drop only complete, older call/result groups. Keep the user's request and the latest exchange.
+      body.messages = dialog.slice();
+      const bytes = value => new TextEncoder().encode(value).length;
+      let payload = JSON.stringify(body);
+      while (bytes(payload) > 56000) {
+        const first = body.messages.findIndex(m => m.tool_calls);
+        const next = body.messages.findIndex((m,i) => i > first && m.tool_calls);
+        if (first < 0 || next < 0) break;
+        const summary = body.messages.slice(first+1,next).map(m => (m.content || '').slice(0,100)).join(' | ');
+        body.messages.splice(first,next-first,{role:'assistant',content:'Earlier tool results (excerpts): '+summary});
+        payload = JSON.stringify(body);
+      }
+      if (bytes(payload) > 56000) throw Error('Context limit reached. Narrow the request or start a new chat.');
+      const resp = await fetch((config.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/,'') + '/chat/completions', {
+        method:'POST', signal:activeRequest.signal, headers:{'Content-Type':'application/json', Authorization:'Bearer '+config.apiKey}, body:payload
       });
-      if(!resp.ok){var t=await resp.text(); throw new Error('API '+resp.status+': '+t.slice(0,300));}
-      var data=await resp.json();
-      if(data.error) throw new Error(data.error.message||JSON.stringify(data.error));
-      return data;
+      if (!resp.ok) throw Error('API '+resp.status+' '+(await resp.text()).slice(0,300));
+      return resp.json();
     }
 
-    // ==================== CHAT ====================
+    function validateValue(value, schema, path) {
+      if (schema.type === 'array') {
+        if (!Array.isArray(value) || value.length > 100) throw Error(path+' expects an array of up to 100 items');
+        value.forEach((item,i) => validateValue(item,schema.items,path+'['+i+']'));
+      } else if (schema.type === 'object') {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw Error(path+' expects an object');
+        for (const key of schema.required || []) if (!(key in value)) throw Error('Missing '+key);
+        for (const [key, item] of Object.entries(value)) {
+          if (!Object.hasOwn(schema.properties,key)) throw Error('Unknown argument '+key);
+          validateValue(item,schema.properties[key],key);
+        }
+      } else if (schema.type === 'integer' ? !Number.isInteger(value) : typeof value !== schema.type) {
+        throw Error('Invalid '+path);
+      }
+      if ((schema.minimum !== undefined && value < schema.minimum) || (schema.maximum !== undefined && value > schema.maximum) || (schema.enum && !schema.enum.includes(value))) throw Error('Invalid '+path);
+    }
+
+    async function runCall(call, offered, seen) {
+      try {
+        const name = call.function.name;
+        const tool = offered.find(tool => tool.function.name === name);
+        if (!tool) throw Error('Unavailable tool: '+name);
+        const args = JSON.parse(call.function.arguments);
+        validateValue(args, tool.function.parameters, name);
+        const key = JSON.stringify([name, Object.keys(args).sort().map(k => [k,args[k]])]);
+        if (seen.has(key)) throw Error('Already executed during this request. Use its previous result.');
+        const result = await executeTool(name, args);
+        if (!name.startsWith('get_') && (!result?.error || result.parent_id)) seen.add(key);
+        return result;
+      } catch (error) { return {error:error.message}; }
+    }
+
     async function sendMessage(userText) {
       if (!userText.trim() || isProcessing) return;
-      if (!config || !config.apiKey) { showConfigWarning(); return; }
-
-      isProcessing = true; updateSendBtn();
+      if (!config?.apiKey) { showConfigWarning(); return; }
+      const dialog = [{role:'system', content:BASE_SYSTEM_PROMPT}, ...recentHistory(), {role:'user', content:userText}];
+      if (!getActiveConv()) createConversation('New Chat');
+      closeConvDropdown();
+      activeRequest = new AbortController();
+      isProcessing = true;
+      updateSendBtn();
       displayMessage('user', userText);
-
-      var ctx = await buildContext();
-      messages.push({role:'user',content:userText+'\n\n---\n[App Context]\n'+ctx});
-
-      var thinkingEl = showThinking();
+      messages.push({role:'user',content:userText});
+      const status = showThinking();
+      const actions = [];
+      const seen = new Set();
+      let remaining = TURN_TOKENS;
+      let answer;
       try {
-        var maxRounds = 10, round = 0;
-        var response = await callOpenAI(messages);
-        var allActions = [];
-        while (round < maxRounds) {
-          var choice = response.choices && response.choices[0];
-          if (!choice) throw new Error('No response');
-          var am = choice.message;
-          if (am.tool_calls && am.tool_calls.length > 0) {
-            var asstMsg = {role:'assistant',content:am.content||null,tool_calls:am.tool_calls};
-            if(am.reasoning_content) asstMsg.reasoning_content = am.reasoning_content;
-            messages.push(asstMsg);
-            for (var i=0;i<am.tool_calls.length;i++) {
-              var tc=am.tool_calls[i], args={};
-              try{args=JSON.parse(tc.function.arguments);}catch(e){}
-              var result=await executeTool(tc.function.name,args);
-              allActions.push({name:tc.function.name,args:args,result:result});
-              messages.push({role:'tool',tool_call_id:tc.id,content:JSON.stringify(result).slice(0,6000)});
-            }
-            response=await callOpenAI(messages); round++;
-          } else {
-            var finalMsg = {role:'assistant',content:am.content};
-            if(am.reasoning_content) finalMsg.reasoning_content = am.reasoning_content;
-            messages.push(finalMsg);
-            removeThinking(thinkingEl);
-            if(allActions.length>0) displayActions(allActions);
-            displayMessage('assistant',am.content||'(No response)');
+        dialog[0].content += '\nToday: '+(await dayContext()).todayStr;
+        for (let round = 0; round <= MAX_ROUNDS; round++) {
+          const final = round === MAX_ROUNDS || remaining < 1024;
+          const offered = final ? [] : availableTools();
+          if (final) dialog.push({role:'system',content:'Summarize completed actions and any outstanding work. Do not request further tools.'});
+          const limit = Math.min(responseLimit(config.maxTokens), remaining - (final ? 0 : 768));
+          const response = await callOpenAI(dialog, offered, limit);
+          const used = response.usage?.completion_tokens;
+          remaining -= Number.isInteger(used) && used > 0 ? Math.min(limit,used) : limit;
+          const choice = response.choices?.[0];
+          if (!choice?.message) throw Error(response.error?.message || 'Empty response');
+          if (choice.finish_reason === 'length') throw Error('Model reached its output limit. Split the request into smaller steps.');
+          const msg = choice.message;
+          if (!msg.tool_calls?.length) {
+            if (!msg.content) throw Error('No answer received');
+            answer = msg.content;
             break;
           }
+          if (final || msg.tool_calls.length > 8) throw Error('Tool call limit reached. Split the request into smaller steps.');
+          dialog.push({role:'assistant',content:msg.content || null,tool_calls:msg.tool_calls,
+            ...(msg.reasoning_content ? {reasoning_content:msg.reasoning_content} : {})});
+          for (const call of msg.tool_calls) {
+            activeRequest.signal.throwIfAborted();
+            status.textContent = 'Running '+call.function.name.replaceAll('_',' ')+'…';
+            const result = await runCall(call, offered, seen);
+            const partial = result?.results?.filter(row => row.success === false);
+            const error = result?.error || (partial?.length ? partial.length+' failed: '+partial[0].error : '');
+            const ref = result?.task_id || result?.project_id || result?.tag_id || result?.parent_id;
+            const detail = result?.items ? result.items.length+' of '+result.total
+              : result?.results ? result.results.length+' processed' : ref;
+            const action = {name:call.function.name,error,ref,detail};
+            actions.push(action);
+            displayActions([action]);
+            const serialized = JSON.stringify(result);
+            const content = serialized.length <= 5000 ? serialized : JSON.stringify({
+              truncated:true, error:error || undefined, summary:'Result too large. Narrow your query.', sample:serialized.slice(0,1500)
+            });
+            dialog.push({role:'tool',tool_call_id:call.id,content});
+          }
+          status.textContent = 'Reviewing results…';
+          status.parentElement.appendChild(status);
         }
-        if(round>=maxRounds){removeThinking(thinkingEl);if(allActions.length>0)displayActions(allActions);displayMessage('assistant','⚠️ Max rounds reached.');}
-      } catch(e) { removeThinking(thinkingEl); displayError(e.message); }
-      isProcessing=false; updateSendBtn();
-      autoNameConversation();
-      updateConvSelector();
-      saveConversations();
+      } catch (error) { answer = activeRequest.signal.aborted ? 'Stopped. Completed tool actions are shown above.' : error.message; }
+      finally {
+        removeThinking(status);
+        messages.push({role:'assistant',content:answer,actions});
+        displayMessage('assistant',answer);
+        autoNameConversation();
+        updateConvSelector();
+        await saveConversations();
+        isProcessing = false;
+        updateSendBtn();
+      }
     }
 
     // ==================== MARKDOWN RENDERER ====================
@@ -1088,6 +1235,7 @@
       // Restore code blocks
       md = md.replace(/%%CODEBLOCK_(\d+)%%/g, function(_, i) {
         var cb = codeBlocks[parseInt(i)];
+        if (!cb) return _;
         return '<pre><code>' + escapeHtml(cb.code.replace(/\n$/, '')) + '</code></pre>';
       });
 
@@ -1112,16 +1260,14 @@
       c.appendChild(d); c.scrollTop=c.scrollHeight;
     }
     function displayActions(actions) {
-      var c=document.getElementById('chat-container');
-      var d=document.createElement('div'); d.className='action-cards message assistant';
-      for(var i=0;i<actions.length;i++){var a=actions[i];
-        var card=document.createElement('div'); card.className='action-card '+(a.result.error?'error':'success');
-        var ic=document.createElement('span'); ic.className='action-icon'; ic.textContent=a.result.error?'✗':'✓';
-        var n=document.createElement('span'); n.className='action-name'; n.textContent=a.name;
-        var dt=document.createElement('span'); dt.className='action-detail'; dt.textContent=a.args.title||a.args.task_id?(a.args.title||a.args.task_id.slice(0,8)+'...'):'';
-        card.appendChild(ic);card.appendChild(n);card.appendChild(dt);d.appendChild(card);
+      const container = document.getElementById('chat-container');
+      for (const action of actions) {
+        const card = document.createElement('div');
+        card.className = 'action-card ' + (action.error ? 'error' : 'success');
+        card.textContent = (action.error ? '✗ ' : '✓ ') + action.name.replaceAll('_',' ') + ((action.error || action.detail) ? ' · '+(action.error || action.detail) : '');
+        container.appendChild(card);
       }
-      c.appendChild(d); c.scrollTop=c.scrollHeight;
+      container.scrollTop = container.scrollHeight;
     }
     function displayError(msg) {
       var c=document.getElementById('chat-container');
@@ -1130,26 +1276,26 @@
     }
     function showThinking() {
       var c=document.getElementById('chat-container');
-      var d=document.createElement('div'); d.className='message assistant';
+      var d=document.createElement('div'); d.className='message assistant run-status'; d.setAttribute('role','status');
       d.innerHTML='<div class="thinking"><div class="thinking-dots"><span></span><span></span><span></span></div>Thinking...</div>';
       c.appendChild(d); c.scrollTop=c.scrollHeight; return d;
     }
     function removeThinking(el){if(el&&el.parentNode)el.parentNode.removeChild(el);}
     function showWelcome() {
       document.getElementById('chat-container').innerHTML=
-        '<div class="welcome"><div class="welcome-icon">🤖</div><h3>AI Assistant</h3>'+
-        '<p>I can help manage tasks, projects, and tags.<br>Tell me what you need!</p>'+
+        '<div class="welcome"><h3>What would you like to work on?</h3>'+
+        '<p>Ask about your work or make a change in Super Productivity.</p>'+
         '<div class="quick-actions">'+
-        '<button class="quick-action" onclick="quickSend(\'Show me my tasks\')">📋 My tasks</button>'+
-        '<button class="quick-action" onclick="quickSend(\'What should I focus on today?\')">🎯 Focus today</button>'+
-        '<button class="quick-action" onclick="quickSend(\'Create a task: \')">➕ New task</button>'+
-        '<button class="quick-action" onclick="quickSend(\'Show my projects\')">📁 Projects</button>'+
+        '<button class="quick-action" onclick="quickSend(\'Show me my tasks\')">Find tasks</button>'+
+        '<button class="quick-action" onclick="quickSend(\'What should I focus on today?\')">Plan today</button>'+
+        '<button class="quick-action" onclick="quickSend(\'Create a task: \')">Create task</button>'+
+        '<button class="quick-action" onclick="quickSend(\'Show my projects\')">List projects</button>'+
         '</div></div>';
     }
     function showConfigWarning() {
       document.getElementById('chat-container').innerHTML=
         '<div class="config-warning"><div class="welcome-icon">⚙️</div><h3>Configuration Required</h3>'+
-        '<p>Click the ⚙️ button in the top-right corner to configure your API key.</p></div>';
+        '<p>Connect an OpenAI-compatible model to start chatting.</p><button class="setup-btn" onclick="openSettings()">Open settings</button></div>';
     }
     function showSnack(msg) {
       var c=document.getElementById('chat-container');
@@ -1164,7 +1310,11 @@
     function autoResize() {
       var i=document.getElementById('input'); i.style.height='auto'; i.style.height=Math.min(i.scrollHeight,120)+'px';
     }
-    function updateSendBtn(){document.getElementById('send-btn').disabled=isProcessing;}
+    function updateSendBtn() {
+      document.getElementById('stop-btn').hidden = !isProcessing;
+      document.getElementById('send-btn').hidden = isProcessing;
+      for (const id of ['send-btn','conv-selector','new-conv-btn','settings-btn']) document.getElementById(id).disabled = isProcessing;
+    }
     function clearConversation(){
       messages.length = 0;
       showWelcome();
@@ -1242,9 +1392,10 @@
 
       input.addEventListener('input',autoResize);
       input.addEventListener('keydown',function(e){
-        if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();var t=input.value;if(t.trim()){sendMessage(t);input.value='';autoResize();}}
+        if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&!isProcessing){e.preventDefault();var t=input.value;if(t.trim()){sendMessage(t);input.value='';autoResize();}}
       });
       sendBtn.addEventListener('click',function(){var t=input.value;if(t.trim()){sendMessage(t);input.value='';autoResize();}});
+      document.getElementById('stop-btn').addEventListener('click', () => activeRequest?.abort());
       settingsBtn.addEventListener('click',openSettings);
       settingsSave.addEventListener('click',doSaveSettings);
       settingsCancel.addEventListener('click',closeSettings);
@@ -1307,6 +1458,11 @@
 
     async function initPlugin() {
       setupEventListeners();
+      if (typeof PluginAPI.registerHook === 'function') {
+        Promise.resolve(PluginAPI.registerHook('currentTaskChange', event => {
+          trackedTask = event.current;
+        })).catch(error => console.warn('Timer updates unavailable', error));
+      }
       var hasConfig = await loadConfig();
       updateModelBadge();
 

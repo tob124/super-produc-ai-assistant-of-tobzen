@@ -10,7 +10,7 @@ An OpenAI-powered AI assistant plugin that lets you manage tasks, projects, and 
 - ⏱️ Start/stop timers, set current task, plan for today
 - 🏷️ Add/remove individual tags without replacing others
 - 📊 Worklog reports: time per day/project/tag, estimate accuracy
-- 🔄 Agentic tool calling — AI auto-executes operations (up to 5 rounds)
+- 🔄 Agentic tool calling — AI auto-executes operations (up to 5 tool rounds followed by a final summary)
 - 📝 Markdown rendering for AI responses (headers, tables, code blocks, lists)
 - ⚙️ Configurable: API key, base URL, model, temperature
 
@@ -30,7 +30,7 @@ Click the ⚙️ button in the top-right corner of the plugin panel:
 | API Key | *(required)* | Your OpenAI API key |
 | Base URL | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
 | Model | `gpt-4o` | Model name |
-| Max Tokens | `4096` | Max response tokens |
+| Max Tokens | `2048` | Output allowance per model response (256–4096). A user turn has an 8192-token cumulative output budget. |
 | Temperature | `0.7` | Response creativity (0-2) |
 
 Supports any OpenAI-compatible API (DeepSeek, Claude via proxy, local models, etc.)
@@ -39,7 +39,7 @@ Supports any OpenAI-compatible API (DeepSeek, Claude via proxy, local models, et
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Tasks** | `create_task`, `get_tasks`, `update_task`, `complete_task`, `delete_task` | Full CRUD with advanced filters (search, overdue, planned, recurring) |
+| **Tasks** | `create_task`, `get_tasks`, `get_task`, `update_task`, `complete_task`, `delete_task` | Full CRUD with advanced filters (search, overdue, planned, recurring) |
 | **Bulk** | `bulk_complete_tasks`, `bulk_update_tasks` | Batch operations, up to 100 tasks |
 | **Tags** | `add_tag_to_task`, `remove_tag_from_task` | Add/remove single tags without replacing others |
 | **Subtasks** | `create_task_with_subtasks` | Create parent + subtasks in one call |
@@ -51,6 +51,10 @@ Supports any OpenAI-compatible API (DeepSeek, Claude via proxy, local models, et
 | **Tags** | `get_tags`, `create_tag`, `update_tag` | Tag management |
 | **Context** | `set_active_work_context` | Switch active project/tag view |
 | **UI** | `show_notification` | Show snackbar notifications |
+
+Task, project and tag lists return a page with `total` and `next_offset`. Task notes are available on demand with `get_task`. Recent chat text is reused across turns. Tool transcripts and reasoning are sent only during the active turn. Stop cancels the pending model request and prevents further tool calls. Host operations already underway can still finish.
+
+Timer controls appear on hosts exposing `startTracking` and `stopTracking`. The timer status reader uses the host’s `currentTaskChange` event and reports when it has not yet observed a change.
 
 ### Task Filters (`get_tasks`)
 
@@ -73,6 +77,8 @@ Supports any OpenAI-compatible API (DeepSeek, Claude via proxy, local models, et
 ├── index.html           # Chat UI + OpenAI integration (all inline)
 └── icon.svg             # Plugin icon
 ```
+
+Run the regression tests with `node --test tests/*.test.cjs`.
 
 ### Build / Package
 

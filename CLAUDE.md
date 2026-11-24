@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Super Productivity plugin (manifest v1) that provides an AI chat panel for task management via OpenAI-compatible APIs. Single-file architecture — all CSS, HTML, and JS live inline in `index.html` (~1000 lines). No build system, no dependencies, no tests.
+Super Productivity plugin (manifest v1) that provides an AI chat panel for task management via OpenAI-compatible APIs. Single-file architecture — all CSS, HTML, and JS live inline in `index.html`. No build system or runtime dependencies. Run regression tests with `node --test tests/*.test.cjs`.
 
 ## File map
 
@@ -20,18 +20,18 @@ Super Productivity plugin (manifest v1) that provides an AI chat panel for task 
 **Runtime environment:** The Super Productivity host injects `PluginAPI` globally. All data operations go through it — there are no direct DB or filesystem calls.
 
 **Data flow:**
-1. `sendMessage()` appends user message + `buildContext()` snapshot to `messages[]`
-2. `callOpenAI()` sends full conversation + tool definitions to the model
+1. `sendMessage()` constructs a bounded history of chat text and requests host data through tools on demand
+2. `callOpenAI()` sends the active exchange and available tool definitions to the model
 3. If the model returns `tool_calls`, `executeTool()` dispatches to matching `PluginAPI` calls, results appended as tool messages, loop continues (max 5 rounds)
 4. Final text response rendered via custom `renderMarkdown()` and displayed
 
 **Persistence:** Config and conversation (last 50 messages) are stored via `PluginAPI.loadSyncedData()` / `PluginAPI.persistDataSynced()` under keys `ai-assistant-config` and `ai-assistant-conversation`.
 
-**Tool definitions** (`var tools = [...]`): 24 tools covering tasks (CRUD, bulk, subtasks, reorder, tags, planning, worklog), projects, tags, app context, and notifications. These are passed to OpenAI's function-calling API.
+**Tool definitions** (`var tools = [...]`): tools covering tasks (CRUD, bulk, subtasks, reorder, tags, planning, worklog), projects, tags, app context, and notifications. These are passed to OpenAI's function-calling API.
 
 **Markdown rendering:** Custom regex-based renderer in `renderMarkdown()` — not a library. Handles headers, bold/italic, links, blockquotes, tables, code blocks, ordered/unordered lists. Code blocks/content are HTML-escaped.
 
-**Reasoning model support:** `reasoning_content` from the API response is preserved in stored messages (v1.6.1).
+**Reasoning model support:** `reasoning_content` from the API response is forwarded during the active tool exchange only.
 
 ## CI/CD
 
