@@ -56,6 +56,8 @@ Task, project and tag lists return a page with `total` and `next_offset`. Use `g
 
 Timer controls appear on hosts exposing `startTracking` and `stopTracking`. The timer status reader uses the host’s `currentTaskChange` event and reports when it has not yet observed a change.
 
+For cross-project planning, `get_workspace_overview` computes counts locally across all non-archived tasks, including subtasks. Open tasks are grouped by planned date (past, today, future, unscheduled); completed tasks are counted separately. Only project summaries are paginated. To act on one task, `get_tasks` can match its exact title and scope by project or parent. `edit_task_note` replaces one unique literal passage, preserving surrounding text. Single-task update, completion, project move and note edits read back the requested fields; the tool reports an unverified host acknowledgment separately.
+
 ### Task Filters (`get_tasks`)
 
 | Filter | Description |

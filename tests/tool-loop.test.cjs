@@ -142,3 +142,61 @@ test('oversized reading preserves evidence and original question on resume, reje
   task.notes+=' changed';
   assert.match((await ui.taskContents(first.resume,turn)).error,/Checkpoint/);
 });
+
+test('workspace counts use all tasks independently of project paging and respect the host day', async () => {
+  const today = '2026-11-24';
+  const projects = Array.from({length:24}, (_,i) => ({id:'p'+i,title:'Project '+i}));
+  const tasks = Array.from({length:2350}, (_,i) => ({id:String(i),projectId:'p'+(i%24)}));
+  Object.assign(tasks[0], {isDone:true,dueDay:'2026-11-23'});
+  Object.assign(tasks[1], {parentId:'25',dueDay:today});
+  Object.assign(tasks[2], {dueDay:'2026-11-25'});
+  Object.assign(tasks[3], {dueWithTime:new Date(2026,10,24,1).getTime()});
+  tasks[4].projectId=null;
+  const ui = panel({getTasks:async()=>tasks,getAllProjects:async()=>projects,
+    getDayContext:async()=>({todayStr:today,startOfNextDayDiffMs:4*3600000})});
+  const first = await ui.executeTool('get_workspace_overview',{limit:3});
+  const second = await ui.executeTool('get_workspace_overview',{offset:first.projects.next_offset,limit:3});
+  assert.deepEqual({...first.totals},{open:2349,done:1,past_planned:1,today:1,future:1,unscheduled:2346});
+  assert.equal(first.projects.items[0].id,'p3');
+  assert.equal(first.projects.total,25);
+  assert.equal(first.projects.items.length,3);
+  assert.equal(JSON.stringify(second.totals),JSON.stringify(first.totals));
+  assert.ok(!second.projects.items.some(p => first.projects.items.some(q => q.id===p.id)));
+});
+
+test('duplicate titles retain project and parent context; a scoped note edit touches only its exact passage', async () => {
+  const tasks = [{id:'a',title:'Review',projectId:'p1',notes:'one\ntwo\nthree'},
+    {id:'b',title:'Review',projectId:'p2',parentId:'parent',notes:'another note'},
+    {id:'parent',title:'Quarterly plan',projectId:'p2'}];
+  let writes=0;
+  const ui = panel({getTasks:async()=>tasks,getAllProjects:async()=>[{id:'p1',title:'First'},{id:'p2',title:'Second'}],
+    getSelectedTask:async()=>tasks[1],
+    updateTask:async(id,changes)=>{writes++;Object.assign(tasks.find(t=>t.id===id),changes)}});
+  const candidates = await ui.executeTool('get_tasks',{exact_title:'review'});
+  assert.equal(candidates.total,2);
+  assert.equal(candidates.items[1].projectTitle,'Second');
+  assert.equal(candidates.items[1].parentTitle,'Quarterly plan');
+  assert.equal((await ui.executeTool('get_tasks',{exact_title:'Review',parent_id:'parent'})).total,1);
+  assert.equal((await ui.executeTool('get_task',{})).id,'b');
+  const receipt=await ui.executeTool('edit_task_note',{task_id:'a',old_text:'two',new_text:'$& revised'});
+  assert.equal(receipt.verified,true);
+  assert.equal(tasks[0].notes,'one\n$& revised\nthree');
+  assert.equal(tasks[1].notes,'another note');
+  assert.match((await ui.executeTool('edit_task_note',{task_id:'a',old_text:'two',new_text:'oops'})).error,/no longer/);
+  tasks[0].notes='aaaa';
+  assert.match((await ui.executeTool('edit_task_note',{task_id:'a',old_text:'aaa',new_text:'oops'})).error,/more than once/);
+  assert.equal(writes,1);
+});
+
+test('a host acknowledgment without the requested change is reported and not replayed',async()=>{
+  let writes=0;
+  const ui=panel({getTasks:async()=>[{id:'a',title:'Old'}],updateTask:async()=>{writes++}});
+  const call={function:{name:'update_task',arguments:JSON.stringify({task_id:'a',title:'New'})}};
+  const seen=new Set();
+  const result=await ui.runCall(call,ui.availableTools(),seen);
+  assert.equal(result.host_accepted,true);
+  assert.equal(result.verified,false);
+  assert.deepEqual([...result.mismatch],['title']);
+  assert.match((await ui.runCall(call,ui.availableTools(),seen)).error,/Already executed/);
+  assert.equal(writes,1);
+});
